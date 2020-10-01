@@ -1,0 +1,13 @@
+[Unit]
+Description=gorun binfmt register service
+After=network-online.target
+Requires=network-online.target
+
+[Service]
+User=root
+RemainAfterExit=true
+Type=oneshot
+ExecStart=/usr/local/bin/gorun-register.sh
+
+[Install]
+WantedBy=multi-user.target
