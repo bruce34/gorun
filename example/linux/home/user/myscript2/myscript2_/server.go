@@ -26,7 +26,7 @@ func ProxyStart(port int) {
 }
 
 func processRequest(r *http.Request, client *http.Client) (response string, code int) {
-	log.Infof("Src %s Method %s URL %s", r.RemoteAddr, r.Method, r.URL.Path, r)
+	log.Infof("Src %s Method %s URL %s %v", r.RemoteAddr, r.Method, r.URL.Path, r)
 	body, _ := ioutil.ReadAll(r.Body)
 
 	splits := strings.SplitN(r.URL.Path, "/", 3)

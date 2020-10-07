@@ -7,7 +7,6 @@
 // require github.com/sirupsen/logrus v1.4.2
 // <<< go.mod
 
-
 // go.sum >>>
 // github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 // github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

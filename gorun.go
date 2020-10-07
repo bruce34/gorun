@@ -538,7 +538,7 @@ func (s *Script) embedEmbedded() (err error) {
 	}
 
 	if foundModOnDisc {
-		_, content = embedSection(content, modContent, "go.mod", foundSumOnDisc && startSumIdx >= 0)
+		_, content = embedSection(content, modContent, "go.mod", foundSumOnDisc && startSumIdx < 0)
 	}
 
 	err = ioutil.WriteFile(s.scriptPath, content, 0600)
