@@ -67,14 +67,15 @@ func main() {
 	gorunArgs := strings.Fields(gorunArgsEnv)
 	args := append(gorunArgs, os.Args[1:]...)
 
-	var diff, embed, extract bool
+	var diff, embed, extract, extractIfMissing bool
 	var targetDirBase string
 	var cleanDays int64
 
 	flag.Int64Var(&cleanDays, "cleanDays", 7, "clean all binaries from this user older than N days")
 	flag.BoolVar(&diff, "diff", false, "show diff between embedded comments and filesystem go.mod/go.sum")
-	flag.BoolVar(&embed, "embed", false, "embed filesystem go.mod/go.sum as comments in source file. If go.mod/go.sum don't exist, then try to extract instead")
+	flag.BoolVar(&embed, "embed", false, "embed filesystem go.mod/go.sum as comments in source file")
 	flag.BoolVar(&extract, "extract", false, "extract the comments to filesystem go.mod/go.sum")
+	flag.BoolVar(&extractIfMissing, "extractIfMissing", false, "extract the comments to filesystem go.mod/go.sum only if BOTH files do not exist on disc")
 	flag.StringVar(&targetDirBase, "targetDirBase", "/tmp", "directory to copy script and extract go.mod etc. to before building")
 	flag.CommandLine.Parse(args)
 
@@ -99,6 +100,8 @@ func main() {
 		err = s.diffEmbedded()
 	} else if extract {
 		err = s.extractEmbedded()
+	} else if extractIfMissing {
+		err = s.extractIfMissingEmbedded()
 	} else if embed {
 		err = s.embedEmbedded()
 	} else {
@@ -511,6 +514,24 @@ func trailer(section string) (trailer string) {
 	return "// <<< " + section + "\n"
 }
 
+// extract the files go.sum, go.mod from the comments at the top of the script and put on disc
+// ONLY if they both don't already exist on disc.
+func (s *Script) extractIfMissingEmbedded() (err error) {
+	foundSumOnDisc, _, err := loadFile(filepath.Join(filepath.Dir(s.scriptPath), "go.sum"))
+	if err != nil {
+		return
+	}
+	foundModOnDisc, _, err := loadFile(filepath.Join(filepath.Dir(s.scriptPath), "go.mod"))
+	if err != nil {
+		return
+	}
+
+	if !foundModOnDisc && !foundSumOnDisc {
+		s.extractEmbedded()
+	}
+	return
+}
+
 // embed the files go.sum, go.mod in the comments at the top of the script
 func (s *Script) embedEmbedded() (err error) {
 	content, err := ioutil.ReadFile(s.scriptPath)
@@ -523,11 +544,6 @@ func (s *Script) embedEmbedded() (err error) {
 	}
 	foundModOnDisc, modContent, err := loadFile(filepath.Join(filepath.Dir(s.scriptPath), "go.mod"))
 	if err != nil {
-		return
-	}
-
-	if !foundModOnDisc && !foundSumOnDisc {
-		s.extractEmbedded()
 		return
 	}
 
