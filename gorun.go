@@ -275,7 +275,9 @@ func (s *Script) compile() (err error) {
 	// if $HOME/.cache can't be built and $GOCACHE is not set, then use a temp home dir
 	if getEnvVar(env, "GOCACHE") == "" {
 		home := getEnvVar(env, "HOME")
-		if _, err := os.Stat(filepath.Join(home, ".cache")); os.IsNotExist(err) {
+		if home == "" || home == "/" {
+			env = append(env, "HOME="+s.perRunTmpDir)
+		} else if _, err := os.Stat(filepath.Join(home, ".cache")); os.IsNotExist(err) {
 			err = os.Mkdir(filepath.Join(home, ".cache"), 0755)
 			if err != nil && !os.IsExist(err) {
 				// unable to create the .cache directory - give this process a temp home (env will likely contain HOME twice)
