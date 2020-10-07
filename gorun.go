@@ -243,7 +243,6 @@ func runCommand(dir string, env []string, command string, args ...string) (err e
 	return
 }
 
-
 func getEnvVar(env []string, key string) string {
 	for _, line := range env {
 		if strings.HasPrefix(line, key+"=") {
@@ -265,8 +264,8 @@ func (s *Script) compile() (err error) {
 	// use the default environment before adding our overrides, this allows GOPRIVATE etc. to be used in the build
 	var env []string
 	section := getSection(content, "go.env")
+	env = os.Environ()
 	if len(section) > 0 {
-		env = os.Environ()
 		env = append(env, strings.Split(string(section), "\n")...)
 	}
 
@@ -277,10 +276,9 @@ func (s *Script) compile() (err error) {
 			err = os.Mkdir(filepath.Join(home, ".cache"), 0755)
 			if err != nil && !os.IsExist(err) {
 				// unable to create the .cache directory - give this process a temp home (env will likely contain HOME twice)
-				env = append(env, "HOME=" + s.perRunTmpDir)
+				env = append(env, "HOME="+s.perRunTmpDir)
 			}
 		}
-
 	}
 
 	// find the go binary to call via env var, std location, or the PATH
