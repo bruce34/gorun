@@ -208,8 +208,12 @@ func (s *Script) updateTarget() (content []byte, err error) {
 		// copy script_ to /tmp/uniqueDir/script_
 		copyDir(filepath.Join(s.perRunTmpDir, filepath.Base(s.scriptExtraDir)), s.scriptExtraDir)
 	}
+	// The go script must be made to end in ".go" to allow go build to work with it
+	dstScriptPath := filepath.Join(s.perRunTmpDir, filepath.Base(s.scriptPath))
+	if !strings.HasSuffix(s.scriptPath, ".go") {
+		dstScriptPath += ".go"
+	}
 
-	copyDir(filepath.Join(s.perRunTmpDir, filepath.Base(s.scriptPath)), s.scriptPath)
 	content, err = ioutil.ReadFile(s.scriptPath)
 	if err != nil {
 		return
@@ -218,7 +222,7 @@ func (s *Script) updateTarget() (content []byte, err error) {
 		content[0] = '/'
 		content[1] = '/'
 	}
-	ioutil.WriteFile(filepath.Join(s.perRunTmpDir, filepath.Base(s.scriptPath)), content, 0600)
+	ioutil.WriteFile(dstScriptPath, content, 0600)
 
 	// Write a go.mod file from inside the comments
 	err = s.writeFileFromCommentsOrDir(content, "go.mod")
@@ -297,8 +301,7 @@ func (s *Script) compile() (err error) {
 	out := filepath.Join(s.perRunTmpDir, filepath.Base(s.scriptPath)+".bin")
 
 	err = runCommand(s.perRunTmpDir, env,
-		gobin, "build", "-o", out,
-		filepath.Join(s.perRunTmpDir, filepath.Base(s.scriptPath)))
+		gobin, "build", "-o", out, ".")
 	if err != nil {
 		return err
 	}
