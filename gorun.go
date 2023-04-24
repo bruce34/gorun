@@ -1,3 +1,15 @@
+//
+// go.mod >>>
+// module gorun
+// go 1.18
+// require golang.org/x/mod v0.10.0
+// <<< go.mod
+
+// go.sum >>>
+// golang.org/x/mod v0.10.0 h1:lFO9qtOdlre5W1jxS3r/4szv2/6iXxScdzjoBMXNhYk=
+// golang.org/x/mod v0.10.0/go.mod h1:iBbtSCu2XBx23ZKBPSOrRkjjQPZFPuis4dIYUhu/chs=
+// <<< go.sum
+
 package main
 
 import (
@@ -5,7 +17,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"golang.org/x/mod/modfile"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,19 +41,32 @@ too will be copied and included in the build of the go program.
 	flag.PrintDefaults()
 }
 
+const (
+	GOMOD     = "go.mod"
+	GOSUM     = "go.sum"
+	GOWORK    = "go.work"
+	GOWORKSUM = "go.work.sum"
+)
+
 type Script struct {
-	scriptPath     string
-	scriptExtraDir string
-	args           []string
-	// where to write sub directories to
+	debug             bool     // more output, don't delete temporary files
+	content           []byte   // contents of the primary script.go file
+	scriptPath        string   // full path to the primary script.go file
+	scriptExtraDir    string   // full path to any extra script dir
+	scriptRelWorkDirs []string // path to any local referenced (../* only) go.work directories
+	scriptWorkDirs    []string // path to any local referenced (../* only) go.work directories, full path
+	args              []string
+	// where to write subdirectories to
 	tmpDirBase string
 	// subdirectory containing all this user's commands (a sub of tmpDirBase)
 	perUserTmpDir string
 	// subdirectory containing this user's version of the command (a sub of perUserTmpDir)
 	tmpDir string
+	// per PID version of this user's version of the command (deleted after build)
+	perRunTmpDirBase string
 	// copy everything down to a completely unique tmp directory and delete it afterwards
-	// moving the binary to binary just before (a sub of tmpDir)
 	perRunTmpDir string
+	// moving the binary to <tmpDir>/script.go.bin just before
 	// compiled binary final resting place, lives under tmpDir
 	binary string
 	// file showing the binary was run lately (for filesystems not running atime)
@@ -50,6 +75,7 @@ type Script struct {
 	cleanSecs int64
 }
 
+// realPath returns the real absolute path, resolving symlinks
 func realPath(sourceFile string) (realPath string, err error) {
 	sourceFile, err = filepath.Abs(sourceFile)
 	if err != nil {
@@ -62,39 +88,38 @@ func realPath(sourceFile string) (realPath string, err error) {
 func main() {
 	flag.Usage = Usage
 
-	// gather up all args, command line and GORUN_ARGS in to one array
+	// gather all args, command line and GORUN_ARGS in to one array
 	gorunArgsEnv, _ := os.LookupEnv("GORUN_ARGS")
 	gorunArgs := strings.Fields(gorunArgsEnv)
 	args := append(gorunArgs, os.Args[1:]...)
 
 	var diff, embed, extract, extractIfMissing bool
-	var targetDirBase string
 	var cleanDays int64
 
+	s := Script{}
+
 	flag.Int64Var(&cleanDays, "cleanDays", 7, "clean all binaries from this user older than N days")
-	flag.BoolVar(&diff, "diff", false, "show diff between embedded comments and filesystem go.mod/go.sum")
-	flag.BoolVar(&embed, "embed", false, "embed filesystem go.mod/go.sum as comments in source file")
-	flag.BoolVar(&extract, "extract", false, "extract the comments to filesystem go.mod/go.sum")
-	flag.BoolVar(&extractIfMissing, "extractIfMissing", false, "extract the comments to filesystem go.mod/go.sum only if BOTH files do not exist on disc")
-	flag.StringVar(&targetDirBase, "targetDirBase", "/tmp", "directory to copy script and extract go.mod etc. to before building")
+	flag.BoolVar(&diff, "diff", false, "show diff between embedded comments and filesystem go.mod/go.sum/go.work/go.work.sum")
+	flag.BoolVar(&embed, "embed", false, "embed filesystem go.mod/go.sum/go.work/go.work.sum as comments in source file")
+	flag.BoolVar(&extract, "extract", false, "extract the comments to filesystem go.mod/go.sum/go.work/go.work.sum")
+	flag.BoolVar(&extractIfMissing, "extractIfMissing", false, "extract the comments to filesystem go.mod/go.sum/go.work/go.work.sum only if BOTH files do not exist on disc")
+	flag.BoolVar(&s.debug, "debug", false, "provide more debug, don't delete temporary files under /tmp")
+	flag.StringVar(&s.tmpDirBase, "targetDirBase", "/tmp", "directory to copy script and extract go.mod etc. to before building")
 	flag.CommandLine.Parse(args)
 
 	if len(args) == flag.NFlag() {
 		Usage()
 		os.Exit(1)
 	}
+	s.args = flag.Args()
+	s.cleanSecs = cleanDays * 24 * 3600
 
 	sourceFile, err := realPath(flag.Arg(0))
 	if err != nil {
 		fmt.Printf("Failed to find source file %v\n", err.Error())
 		return
 	}
-	s := Script{
-		scriptPath: sourceFile,
-		tmpDirBase: targetDirBase,
-		args:       flag.Args(),
-		cleanSecs:  cleanDays * 24 * 3600,
-	}
+	s.scriptPath = sourceFile
 
 	if diff {
 		err = s.diffEmbedded()
@@ -113,19 +138,15 @@ func main() {
 	}
 }
 
-func (s *Script) commandDir() (dir string, err error) {
+// initVars fills in commonly used variables (paths), e.g. what is the path to the script binary.
+// It reads the contents of the go script, to be able to extract the go.work section and also allow
+// any go.work "shared libraries" to be copied over to the temporary build area too.
+func (s *Script) initVars() (err error) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		return
 	}
-	dir = fmt.Sprintf("gorun-%v-%v%v", hostname, os.Getuid(), filepath.Separator,
-		strings.ReplaceAll(s.scriptPath, string(filepath.Separator), "_"))
-	return
-}
-
-// setVars fills in commonly used variables (paths), e.g. what is the path to the script binary
-func (s *Script) setVars() (err error) {
-	hostname, err := os.Hostname()
+	s.content, err = os.ReadFile(s.scriptPath)
 	if err != nil {
 		return
 	}
@@ -146,9 +167,23 @@ func (s *Script) setVars() (err error) {
 		err = nil
 		s.scriptExtraDir = ""
 	}
-	s.perRunTmpDir = filepath.Join(s.tmpDir, strconv.Itoa(os.Getpid()))
+	s.perRunTmpDirBase = filepath.Join(s.tmpDir, strconv.Itoa(os.Getpid()))
+	s.perRunTmpDir = filepath.Join(s.perRunTmpDirBase, filepath.Dir(s.scriptPath))
 	s.binary = filepath.Join(s.tmpDir, filepath.Base(s.scriptPath)+".bin")
 	s.binaryLastRun = filepath.Join(s.tmpDir, ".lastRun")
+
+	// deal with a go.work file
+	gowork := getSection(s.content, GOWORK)
+
+	// for each WorkFile.Path, we want to ignore ./* and copy any ../.* across
+	wf, err := modfile.ParseWork(GOWORK, gowork, nil)
+	for _, w := range wf.Use {
+		if strings.HasPrefix(w.Path, "../") {
+			s.scriptRelWorkDirs = append(s.scriptRelWorkDirs, w.Path)
+			s.scriptWorkDirs = append(s.scriptWorkDirs, filepath.Join(filepath.Dir(s.scriptPath), w.Path))
+		}
+	}
+
 	return
 }
 
@@ -162,12 +197,12 @@ func copyDir(dstDir string, srcDir string) (err error) {
 		relPath, err := filepath.Rel(srcDir, srcPath)
 		switch f.Mode() & os.ModeType {
 		case 0: // Regular file
-			content, err := ioutil.ReadFile(srcPath)
+			content, err := os.ReadFile(srcPath)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "Failed to read (while copying) "+relPath+" to "+dstDir)
 				return err
 			}
-			err = ioutil.WriteFile(filepath.Join(dstDir, relPath), content, 0600)
+			err = os.WriteFile(filepath.Join(dstDir, relPath), content, 0600)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "Failed to write (while copying) "+relPath+" to "+dstDir)
 				return err
@@ -200,39 +235,61 @@ func (s *Script) writeFileFromCommentsOrDir(content []byte, sectionName string) 
 }
 
 // updateTarget copies all needed files to build the script binary to the target area
-func (s *Script) updateTarget() (content []byte, err error) {
-	os.RemoveAll(s.perRunTmpDir) // just in case it still exists
-	os.MkdirAll(s.perRunTmpDir, 0700)
+func (s *Script) updateTarget() (err error) {
+	os.RemoveAll(s.perRunTmpDirBase) // just in case it still exists
+	os.MkdirAll(s.perRunTmpDirBase, 0700)
 
+	checkDirs := []string{}
 	if s.scriptExtraDir != "" {
-		// copy script_ to /tmp/uniqueDir/script_
-		copyDir(filepath.Join(s.perRunTmpDir, filepath.Base(s.scriptExtraDir)), s.scriptExtraDir)
+		checkDirs = append(checkDirs, s.scriptExtraDir)
 	}
+	checkDirs = append(checkDirs, s.scriptWorkDirs...)
+	for _, dir := range checkDirs {
+		src := dir
+		dest := filepath.Join(s.perRunTmpDirBase, dir)
+		os.MkdirAll(dest, 0700)
+		err = copyDir(dest, src)
+		if err != nil {
+			fmt.Printf("%v\n", err.Error())
+		}
+	}
+
 	// The go script must be made to end in ".go" to allow go build to work with it
 	dstScriptPath := filepath.Join(s.perRunTmpDir, filepath.Base(s.scriptPath))
 	if !strings.HasSuffix(s.scriptPath, ".go") {
 		dstScriptPath += ".go"
 	}
 
-	content, err = ioutil.ReadFile(s.scriptPath)
+	if len(s.content) > 2 && s.content[0] == '#' && s.content[1] == '!' {
+		s.content[0] = '/'
+		s.content[1] = '/'
+	}
+	os.MkdirAll(filepath.Dir(dstScriptPath), 0700)
+	err = os.WriteFile(dstScriptPath, s.content, 0600)
 	if err != nil {
 		return
 	}
-	if len(content) > 2 && content[0] == '#' && content[1] == '!' {
-		content[0] = '/'
-		content[1] = '/'
-	}
-	ioutil.WriteFile(dstScriptPath, content, 0600)
 
 	// Write a go.mod file from inside the comments
-	err = s.writeFileFromCommentsOrDir(content, "go.mod")
+	err = s.writeFileFromCommentsOrDir(s.content, GOMOD)
 	if err != nil {
 		return
 	}
 
 	// Write a go.sum file from inside the comments
-	err = s.writeFileFromCommentsOrDir(content, "go.sum")
+	err = s.writeFileFromCommentsOrDir(s.content, GOSUM)
+	if err != nil {
+		return
+	}
 
+	// Write a go.sum file from inside the comments
+	err = s.writeFileFromCommentsOrDir(s.content, GOWORK)
+	if err != nil {
+		return
+	}
+
+	// Write a go.sum file from inside the comments
+	err = s.writeFileFromCommentsOrDir(s.content, GOWORKSUM)
 	return
 }
 
@@ -259,18 +316,20 @@ func getEnvVar(env []string, key string) string {
 	return ""
 }
 
-// compile in the perRun directory and move the output to the correct location,
-// delete the perRun directory afterwards
+// compile copies the script and its dependencies to a "per run" tmp directory and compiles it there.
+// The binary is kept, but the "per run" tmp directory is removed at the end
 func (s *Script) compile() (err error) {
-	content, err := s.updateTarget()
+	if !s.debug {
+		defer os.RemoveAll(s.perRunTmpDirBase)
+	}
+	err = s.updateTarget()
 	if err != nil {
 		return
 	}
-	defer os.RemoveAll(s.perRunTmpDir)
 
 	// use the default environment before adding our overrides, this allows GOPRIVATE etc. to be used in the build
 	var env []string
-	section := getSection(content, "go.env")
+	section := getSection(s.content, "go.env")
 	env = os.Environ()
 	if len(section) > 0 {
 		env = append(env, strings.Split(string(section), "\n")...)
@@ -308,7 +367,7 @@ func (s *Script) compile() (err error) {
 	err = os.Rename(out, s.binary)
 	// os.RemoveAll mode 444 files (from go build cache being here when no HOME dir set) on Unix don't allow unlink
 	// so let's chmod all files/dirs to allow the deferred RemoveAll to work
-	_ = filepath.Walk(s.perUserTmpDir, func(name string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(s.perRunTmpDirBase, func(name string, info os.FileInfo, err error) error {
 		if err == nil {
 			err = os.Chmod(name, 0755)
 		}
@@ -362,15 +421,20 @@ func (s *Script) clean() (err error) {
 	return nil
 }
 
-// targetOutOfDate decides whether the target needs recompiled
+// targetOutOfDate decides whether the target needs recompiled, i.e. is the source newer than the binary.
 func (s *Script) targetOutOfDate() (outOfDate bool, err error) {
 	oldestSrcInfo, err := os.Stat(s.scriptPath)
 	if err != nil {
 		return
 	}
-	// if we have an extra source directory, check whether it is newer than the binary as well.
+	// if we have any extra source directories, check whether any are newer than the binary.
+	checkDirs := []string{}
 	if s.scriptExtraDir != "" {
-		filepath.Walk(s.scriptExtraDir, func(path string, info os.FileInfo, err error) error {
+		checkDirs = append(checkDirs, s.scriptExtraDir)
+	}
+	checkDirs = append(checkDirs, s.scriptWorkDirs...)
+	for _, checkDir := range checkDirs {
+		filepath.Walk(checkDir, func(path string, info os.FileInfo, err error) error {
 			if info.ModTime().After(oldestSrcInfo.ModTime()) {
 				oldestSrcInfo = info
 			}
@@ -384,7 +448,7 @@ func (s *Script) targetOutOfDate() (outOfDate bool, err error) {
 
 // runScript compiles if required, and then runs the binary created from the script
 func (s *Script) runScript() (err error) {
-	err = s.setVars()
+	err = s.initVars()
 
 	if s.cleanSecs >= 0 {
 		s.clean()
@@ -427,7 +491,7 @@ func loadFile(filename string) (found bool, content []byte, err error) {
 	if err != nil {
 		return false, nil, nil // no error if file not there
 	}
-	content, err = ioutil.ReadFile(filename)
+	content, err = os.ReadFile(filename)
 	if err != nil {
 		return // error if file there but can't be read
 	}
@@ -468,20 +532,28 @@ func diffBytes(content []byte, dir string, sectionName string) (diff string, err
 }
 
 func (s *Script) diffEmbedded() (err error) {
-	content, err := ioutil.ReadFile(s.scriptPath)
+	content, err := os.ReadFile(s.scriptPath)
 	if err != nil {
 		return
 	}
-	diff1, err := diffBytes(content, filepath.Dir(s.scriptPath), "go.mod")
+	diff1, err := diffBytes(content, filepath.Dir(s.scriptPath), GOMOD)
 	if err != nil {
 		return
 	}
-	diff2, err := diffBytes(content, filepath.Dir(s.scriptPath), "go.sum")
+	diff2, err := diffBytes(content, filepath.Dir(s.scriptPath), GOSUM)
+	if err != nil {
+		return
+	}
+	diff3, err := diffBytes(content, filepath.Dir(s.scriptPath), GOWORK)
+	if err != nil {
+		return
+	}
+	diff4, err := diffBytes(content, filepath.Dir(s.scriptPath), GOWORKSUM)
 	if err != nil {
 		return
 	}
 
-	if diff1 != "" || diff2 != "" {
+	if diff1 != "" || diff2 != "" || diff3 != "" || diff4 != "" {
 		_, _ = fmt.Fprintln(os.Stderr, "Diffs found\n")
 		os.Exit(1)
 	}
@@ -489,16 +561,31 @@ func (s *Script) diffEmbedded() (err error) {
 }
 
 func (s *Script) extractEmbedded() (err error) {
-	content, err := ioutil.ReadFile(s.scriptPath)
+	content, err := os.ReadFile(s.scriptPath)
 	if err != nil {
 		return
 	}
-	_, err = writeFileFromComments(content, "go.sum", filepath.Join(filepath.Dir(s.scriptPath), "go.sum"))
+	_, err = writeFileFromComments(content, GOSUM, filepath.Join(filepath.Dir(s.scriptPath), GOSUM))
 
 	if err != nil {
 		return
 	}
-	_, err = writeFileFromComments(content, "go.mod", filepath.Join(filepath.Dir(s.scriptPath), "go.mod"))
+	_, err = writeFileFromComments(content, GOMOD, filepath.Join(filepath.Dir(s.scriptPath), GOMOD))
+	if err != nil {
+		return
+	}
+	if len(getSection(content, GOWORK)) != 0 {
+		_, err = writeFileFromComments(content, GOWORK, filepath.Join(filepath.Dir(s.scriptPath), GOWORK))
+		if err != nil {
+			return
+		}
+	}
+	if len(getSection(content, GOWORKSUM)) != 0 {
+		_, err = writeFileFromComments(content, GOWORKSUM, filepath.Join(filepath.Dir(s.scriptPath), GOWORKSUM))
+		if err != nil {
+			return
+		}
+	}
 	return
 }
 
@@ -511,10 +598,12 @@ func commentSection(content []byte, header string, trailer string) (commented []
 	return
 }
 
+// header transforms a section name, e.g. 'go.mod' in to a header comment, e.g. '// go.mod >>>\n'
 func header(section string) (header string) {
 	return "// " + section + " >>>\n"
 }
 
+// trailer transforms a section name, e.g. 'go.mod' in to a trailer comment, e.g. '// <<< go.mod\n'
 func trailer(section string) (trailer string) {
 	return "// <<< " + section + "\n"
 }
@@ -522,64 +611,91 @@ func trailer(section string) (trailer string) {
 // extract the files go.sum, go.mod from the comments at the top of the script and put on disc
 // ONLY if they both don't already exist on disc.
 func (s *Script) extractIfMissingEmbedded() (err error) {
-	foundSumOnDisc, _, err := loadFile(filepath.Join(filepath.Dir(s.scriptPath), "go.sum"))
+	foundSumOnDisc, _, err := loadFile(filepath.Join(filepath.Dir(s.scriptPath), GOSUM))
 	if err != nil {
 		return
 	}
-	foundModOnDisc, _, err := loadFile(filepath.Join(filepath.Dir(s.scriptPath), "go.mod"))
+	foundModOnDisc, _, err := loadFile(filepath.Join(filepath.Dir(s.scriptPath), GOMOD))
+	if err != nil {
+		return
+	}
+	foundWorkOnDisc, _, err := loadFile(filepath.Join(filepath.Dir(s.scriptPath), GOWORK))
+	if err != nil {
+		return
+	}
+	foundWorkSumOnDisc, _, err := loadFile(filepath.Join(filepath.Dir(s.scriptPath), GOWORKSUM))
 	if err != nil {
 		return
 	}
 
-	if !foundModOnDisc && !foundSumOnDisc {
+	if !foundModOnDisc && !foundSumOnDisc && !foundWorkOnDisc && !foundWorkSumOnDisc {
 		s.extractEmbedded()
 	}
 	return
 }
 
-// embed the files go.sum, go.mod in the comments at the top of the script
+// embed the files go.sum, go.mod in the comments at the top of the script (go.work is optional)
 func (s *Script) embedEmbedded() (err error) {
-	content, err := ioutil.ReadFile(s.scriptPath)
+	content, err := os.ReadFile(s.scriptPath)
 	if err != nil {
 		return
 	}
-	foundSumOnDisc, sumContent, err := loadFile(filepath.Join(filepath.Dir(s.scriptPath), "go.sum"))
+	foundSumOnDisc, sumContent, err := loadFile(filepath.Join(filepath.Dir(s.scriptPath), GOSUM))
 	if err != nil {
 		return
 	}
-	foundModOnDisc, modContent, err := loadFile(filepath.Join(filepath.Dir(s.scriptPath), "go.mod"))
+	foundModOnDisc, modContent, err := loadFile(filepath.Join(filepath.Dir(s.scriptPath), GOMOD))
 	if err != nil {
 		return
 	}
+	foundWorkOnDisc, workContent, _ := loadFile(filepath.Join(filepath.Dir(s.scriptPath), GOWORK))
+	foundWorkSumOnDisc, workSumContent, _ := loadFile(filepath.Join(filepath.Dir(s.scriptPath), GOWORKSUM))
 
 	// let's only delete an embedded section if there is a section file (e.g. go.sum) on disc alongside
-	startSumIdx := -1
-	if foundSumOnDisc {
-		startSumIdx, content = embedSection(content, sumContent, "go.sum", false)
-	}
-
 	if foundModOnDisc {
-		_, content = embedSection(content, modContent, "go.mod", foundSumOnDisc && startSumIdx < 0)
+		_, content = embedSection(content, modContent, GOMOD, []string{})
 	}
 
-	err = ioutil.WriteFile(s.scriptPath, content, 0600)
+	if foundSumOnDisc {
+		_, content = embedSection(content, sumContent, GOSUM, []string{GOMOD})
+	}
+
+	if foundWorkOnDisc {
+		_, content = embedSection(content, workContent, GOWORK, []string{GOMOD, GOSUM})
+	}
+
+	if foundWorkSumOnDisc {
+		_, content = embedSection(content, workSumContent, GOWORKSUM, []string{GOMOD, GOSUM, GOWORK})
+	}
+
+	err = os.WriteFile(s.scriptPath, content, 0600)
 	return
 }
 
 // replace a commented section of bytes with another commented section of bytes, returning the new entire file contents
 // return idx = -1 if not found
-func embedSection(origContent []byte, sectionBytes []byte, section string, addNewline bool) (foundIdx int, content []byte) {
+func embedSection(origContent []byte, sectionBytes []byte, section string, previousSections []string) (foundIdx int, content []byte) {
+	addNewline := false
+	// if we found the section, put the new one where the old one was
 	foundIdx, content = removeSection(origContent, section)
 	idx := foundIdx
-	if foundIdx < 0 {
+	if foundIdx < 0 { // if we failed to find the section, place it after any sections we want before it
 		idx = 0
+		for _, prevSection := range previousSections {
+			found, _, _, _, foundIdx := sectionIndexes(content, prevSection)
+			if found && foundIdx > idx {
+				idx = foundIdx
+				addNewline = true
+			}
+		}
 	}
 	var contentStart, contentTrailer []byte
+
 	contentStart = append(contentStart, content[0:idx]...)
-	// only add a newline between sections go.sum and go.mod sections if we've added a new go.sum section,
-	// otherwise leave it as the user had it
+	// only add a newline between sections go.sum and go.mod sections if we've added a new (e.g. go.sum) section
+	// after an existing section (e.g. go.mod), otherwise leave it as the user had it
 	if addNewline {
-		contentTrailer = append(contentTrailer, []byte("\n")...)
+		contentStart = append(contentStart, []byte("\n")...)
 	}
 	contentTrailer = append(contentTrailer, content[idx:]...)
 	content = append(contentStart, commentSection(sectionBytes, header(section), trailer(section))...)
@@ -588,6 +704,10 @@ func embedSection(origContent []byte, sectionBytes []byte, section string, addNe
 }
 
 // sectionIndexes returns whether a section is found and if so, the indexes of start, end, etc.
+// found true iff a section called sectionName is found
+// startIdx is the first byte of the header for this section
+// endIdx is the byte after the trailer for this section.
+// InnerIdx mark the start and end of the real content for this section
 func sectionIndexes(content []byte, sectionName string) (found bool, startIdx int, startInnerIdx int, endInnerIdx int, endIdx int) {
 	start := header(sectionName)
 	end := trailer(sectionName)
@@ -611,7 +731,7 @@ func getSection(content []byte, sectionName string) (section []byte) {
 	return []byte("")
 }
 
-// remove a commented section from the contents of the entire file, returning the new contents and where it was removed from
+// removeSection removes a commented section from the contents of the entire file, returning the new contents and where it was removed from
 func removeSection(content []byte, sectionName string) (startIdx int, newContent []byte) {
 	found, startIdx, _, _, endIdx := sectionIndexes(content, sectionName)
 	if found {
@@ -623,11 +743,12 @@ func removeSection(content []byte, sectionName string) (startIdx int, newContent
 	return
 }
 
+// writeFileFromComments write out a particular commented section of a goscript file to a file
 func writeFileFromComments(content []byte, sectionName string, file string) (written bool, err error) {
 	// Write a go.mod file from inside the comments
 	section := getSection(content, sectionName)
 	if len(section) > 0 {
-		err = ioutil.WriteFile(file, section, 0600)
+		err = os.WriteFile(file, section, 0600)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Failed to write "+sectionName+" to "+file)
 			return

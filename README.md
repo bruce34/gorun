@@ -8,7 +8,7 @@ focus more on repeatable builds for a company environment. Development is done o
 deployments on Linux. It may also still work on Windows, but that is untested and not the main focus of this project at
 this time.
 
-## Example
+## Simple Example
 As an example, copy the following content to a file named "hello.go" (or "hello", if you prefer):
 
 ```go
@@ -21,13 +21,31 @@ func main() {
 }
 ```
 
-Then, simply run it:
+Then, run it:
 
 ```
 $ chmod +x hello.go
 $ ./hello.go
 Hello world!
 ```
+
+This relies on the [shebang](https://en.wikipedia.org/wiki/Shebang_(Unix)) to run gorun, which copies and compiles the
+hello.go "script". It does have the downside that go build will no longer work directly on the file, IDEs will get
+confused etc. We can fix that on Linux (at least) 
+
+## Run go code directly
+
+See the section 'Executable' below on how to make this runnable with just a `chmod a+x`
+```go
+// my first hello world script
+
+package main
+
+func main() {
+    println("Hello world!")
+}
+```
+Note, now this is now just a standard go file, keeping the go tools and the IDEs happy.
 
 ## Features
 gorun will:
@@ -114,7 +132,7 @@ go.mod, go.sum contents and environment variables in the file as a comment. Fict
     
     // go.mod >>>
     // module github.com/a/b
-    // go 1.14
+    // go 1.18
     // require github.com/c/d v0.0.0-20200225084820-12345affa
     // require mycompany.com/e/f v0.0.0-20200225084120-1849135
     // <<< go.mod
@@ -137,10 +155,10 @@ above for GOPRIVATE or other such dependency management options to be set before
 
 ### Way of working
 
-The scripts can be organised in a repo in a directory each, with a [Makefile](example/home/user/Makefile) at
-the top level that will automatically extract the go.mod and go.sum (.gitignore) the first time it is run, and
-thereafter take the changes from the filesystem. That way there is only one checked in version of dependency versions -
-in the comment at the top of the script.
+The scripts can be organised in a repo in a directory each, with a [Makefile](example/linux/home/user/Makefile) at
+the top level that will automatically extract the go.mod, go.sum and optional go.work/go.work.sum files the first time
+it is run, and thereafter take the changes from the filesystem. That way there is only one checked in version of
+dependency versions - in the comment at the top of the script.
 
 The individual script files (not the go.mod and go.sum files) and any "extra" source directory can then be deployed to
 a single directory already on the PATH, e.g. /usr/local/bin
@@ -158,11 +176,19 @@ Place any extra source files in a directory with the same name as the source .go
 
 Then import "httpServe/httpServe_/net" in httpServe.go etc.
 
+## go.work and "shared libraries"
+
+It is handy to share code between multiple different scripts, and have that shared code in source form that is compiled
+at run time too.
+
+To do that, go.work files can be added to the scripts that references the desired ../sharedLibrary. See the
+[myScriptUsingLibrary1](example/linux/home/user/myScriptUsingLibrary1) example
+
 ## Gotchas
 
 1. To run a script as nobody, normally go build would fail as it couldn't download its dependencies etc. without a valid
-$HOME. This is checked for and HOME is set to a per user run directory (by default under /tmp). This does mean that any time the script needs
-compiled then it will download all dependencies again, and delete them straight after the build.
+$HOME. This is checked for and HOME is set to a per user run directory (by default under /tmp). This does mean that any
+time the script needs compiled then it will download all dependencies again, and delete them straight after the build.
 
 ## License
 

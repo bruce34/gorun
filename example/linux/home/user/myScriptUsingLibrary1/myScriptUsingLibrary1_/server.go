@@ -1,4 +1,4 @@
-package myScriptUsingLibrary_
+package myScriptUsingLibrary1
 
 import (
 	"fmt"

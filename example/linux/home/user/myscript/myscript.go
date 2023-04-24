@@ -3,24 +3,27 @@
 
 // go.mod >>>
 // module myscript
-// go 1.14
-// require github.com/sirupsen/logrus v1.4.2
+// go 1.18
+// require github.com/sirupsen/logrus v1.9.0
+// require golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8 // indirect
 // <<< go.mod
 
 // go.sum >>>
+// github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 // github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 // github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-// github.com/konsorten/go-windows-terminal-sequences v1.0.1 h1:mweAR1A6xJ3oS2pRaGiHgQ4OO8tzTaLawm8vnODuwDk=
-// github.com/konsorten/go-windows-terminal-sequences v1.0.1/go.mod h1:T0+1ngSBFLxvqU3pZ+m/2kptfBszLMUkC4ZK/EgS/cQ=
 // github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 // github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
-// github.com/sirupsen/logrus v1.4.2 h1:SPIRibHv4MatM3XXNO2BJeFLZwZ2LvZgfQ5+UNI2im4=
-// github.com/sirupsen/logrus v1.4.2/go.mod h1:tLMulIdttU9McNUspp0xgXVQah82FyeX6MwdIuYE2rE=
-// github.com/stretchr/objx v0.1.1/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
-// github.com/stretchr/testify v1.2.2 h1:bSDNvY7ZPG5RlJ8otE/7V6gMiyenm9RtJ7IUVIAoJ1w=
-// github.com/stretchr/testify v1.2.2/go.mod h1:a8OnRcib4nhh0OaRAV+Yts87kKdq0PP7pXfy6kDkUVs=
-// golang.org/x/sys v0.0.0-20190422165155-953cdadca894 h1:Cz4ceDQGXuKRnVBDTS23GTn/pU5OE2C0WrNTOYK1Uuc=
-// golang.org/x/sys v0.0.0-20190422165155-953cdadca894/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+// github.com/sirupsen/logrus v1.9.0 h1:trlNQbNUG3OdDrDil03MCb1H2o9nJ1x4/5LYw7byDE0=
+// github.com/sirupsen/logrus v1.9.0/go.mod h1:naHLuLoDiP4jHNo9R0sCBMtWGeIprob74mVsIT4qYEQ=
+// github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+// github.com/stretchr/testify v1.7.0 h1:nwc3DEeHmmLAfoZucVR881uASk0Mfjw8xYJ99tb5CcY=
+// github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
+// golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8 h1:0A+M6Uqn+Eje4kHMK80dtF3JCXC4ykBgQG4Fe06QRhQ=
+// golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+// gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+// gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c h1:dUUwHk2QECo/6vqA44rthZ8ie2QXMNeKRTHCNY2nXvo=
+// gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
 // <<< go.sum
 
 // Comment afterwards
@@ -30,81 +33,25 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
-	"net/http"
-	"strconv"
-	"strings"
-
+	// Note how importing logrus and running the Makefile the go.mod/go.sum are updated then embedded as comments above
 	log "github.com/sirupsen/logrus"
+	"net/http"
 )
 
-func Usage() {
-	fmt.Fprintf(flag.CommandLine.Output(),
-		flag.CommandLine.Name()+`: Mirror back http responses depending on the http request 
-
-Send to http://localhost:%d/<RETURN_CODE>/<response> or POST/PUT a body for the response.
-
-e.g. curl -v http://localhost:8083/503/exampleResponse
-	 curl -v http://localhost:8083/200
-     echo "hello there how are you?" | curl -v -X PUT -d @- http://127.0.0.1:8083/501
-
-`)
-	fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", flag.CommandLine.Name())
-	flag.PrintDefaults()
+func ProxyStart(port int) {
+	http.HandleFunc("/",
+		func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(200)
+			w.Write([]byte("OK"))
+		})
+	http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
 }
 
 func main() {
-	flag.Usage = Usage
-	port := flag.Int("port", 8083, "port to listen to https requests on")
-	logLevel := flag.String("logLevel", "info", "log level to use: debug,info,warn")
+	var port int
+	flag.IntVar(&port, "port", 8083, "port to listen to https requests on")
 	flag.Parse()
-	level, err := log.ParseLevel(*logLevel)
-	if err != nil {
-		log.Fatalf("Unknown logLevel %s", *logLevel)
-	}
-	log.SetLevel(log.Level(level))
 
-	// go has a weird way of specifying timestamps! https://stackoverflow.com/questions/20234104/how-to-format-current-time-using-a-yyyymmddhhmmss-format
-	log.SetFormatter(&log.TextFormatter{TimestampFormat: "2006-01-02 15:04:05.999", FullTimestamp: true})
-
-	log.Infof("Starting on port %d", *port)
-
-	ProxyStart(*port)
-}
-
-func ProxyStart(port int) {
-	tr := &http.Transport{
-		DisableKeepAlives: false,
-	}
-	client := &http.Client{Transport: tr}
-
-	http.HandleFunc("/",
-		func(w http.ResponseWriter, r *http.Request) {
-			resp, code := processRequest(r, client)
-			w.WriteHeader(code)
-			fmt.Fprintf(w, resp)
-		})
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), nil))
-}
-
-func processRequest(r *http.Request, client *http.Client) (response string, code int) {
-	log.Infof("Src %s Method %s URL %s %v", r.RemoteAddr, r.Method, r.URL.Path, r)
-	body, _ := ioutil.ReadAll(r.Body)
-
-	splits := strings.SplitN(r.URL.Path, "/", 3)
-	if len(splits) >= 3 {
-		response = splits[2]
-	}
-	if len(splits) >= 2 {
-		code, _ = strconv.Atoi(splits[1])
-	}
-	if code < 100 || code > 599 {
-		code = 200
-	}
-	if len(body) > 0 {
-		response = response + string(body)
-		log.Infof("Body %s", string(body))
-	}
-
-	return response, code
+	log.Printf("Starting on port %d", port)
+	ProxyStart(port)
 }

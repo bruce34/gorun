@@ -1,4 +1,4 @@
-package myScript2
+package serverPackage
 
 import (
 	"fmt"
