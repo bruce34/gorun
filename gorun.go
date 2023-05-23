@@ -22,11 +22,20 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
+
+// BuildInfoString returns the build information stored within the compiled binary, git sha etc.
+func BuildInfoString() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		return info.String()
+	}
+	return "(unknown)"
+}
 
 func Usage() {
 	fmt.Fprintf(flag.CommandLine.Output(),
@@ -93,7 +102,7 @@ func main() {
 	gorunArgs := strings.Fields(gorunArgsEnv)
 	args := append(gorunArgs, os.Args[1:]...)
 
-	var diff, embed, extract, extractIfMissing bool
+	var diff, embed, extract, extractIfMissing, version bool
 	var cleanDays int64
 
 	s := Script{}
@@ -105,12 +114,19 @@ func main() {
 	flag.BoolVar(&extractIfMissing, "extractIfMissing", false, "extract the comments to filesystem go.mod/go.sum/go.work/go.work.sum only if BOTH files do not exist on disc")
 	flag.BoolVar(&s.debug, "debug", false, "provide more debug, don't delete temporary files under /tmp")
 	flag.StringVar(&s.tmpDirBase, "targetDirBase", "/tmp", "directory to copy script and extract go.mod etc. to before building")
+	flag.BoolVar(&version, "version", false, "Print version info and exit")
 	flag.CommandLine.Parse(args)
+
+	if version {
+		fmt.Printf("BuildInfo: %v\n", BuildInfoString())
+		os.Exit(0)
+	}
 
 	if len(args) == flag.NFlag() {
 		Usage()
 		os.Exit(1)
 	}
+
 	s.args = flag.Args()
 	s.cleanSecs = cleanDays * 24 * 3600
 
