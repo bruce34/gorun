@@ -450,12 +450,19 @@ func (s *Script) targetOutOfDate() (outOfDate bool, err error) {
 	}
 	checkDirs = append(checkDirs, s.scriptWorkDirs...)
 	for _, checkDir := range checkDirs {
-		filepath.Walk(checkDir, func(path string, info os.FileInfo, err error) error {
+		err = filepath.Walk(checkDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "FATAL: Unable to find dependency: %v\n", path)
+				return err
+			}
 			if info.ModTime().After(oldestSrcInfo.ModTime()) {
 				oldestSrcInfo = info
 			}
 			return nil
 		})
+		if err != nil {
+			return true, err
+		}
 	}
 	binaryInfo, err := os.Stat(s.binary)
 	outOfDate = err != nil || binaryInfo.IsDir() || binaryInfo.ModTime().Before(oldestSrcInfo.ModTime())
