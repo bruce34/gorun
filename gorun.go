@@ -324,7 +324,11 @@ func runCommand(dir string, env []string, command string, args ...string) (err e
 }
 
 func getEnvVar(env []string, key string) string {
-	for _, line := range env {
+
+	// Go through the list backwards so that we pick up the last version of any
+	// duplicate keys. This matches the behaviour of exec.Cmd.Env
+	for i := len(env) - 1; i >= 0; i-- {
+		line := env[i]
 		if strings.HasPrefix(line, key+"=") {
 			return strings.SplitAfterN(line, key+"=", 2)[1]
 		}
