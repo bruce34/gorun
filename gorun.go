@@ -617,9 +617,9 @@ func (s *Script) extractEmbedded() (err error) {
 }
 
 func commentSection(content []byte, header string, trailer string) (commented []byte) {
-	commented = bytes.ReplaceAll(content, []byte("\n"), []byte("\n// "))
+	commented = bytes.ReplaceAll(content, []byte("\n"), []byte("\n// :"))
 	commented = append(commented, []byte("\n")...)
-	commented = append([]byte("// "), commented...)
+	commented = append([]byte("// :"), commented...)
 	commented = append([]byte(header), commented...)
 	commented = append(commented, []byte(trailer)...)
 	return
@@ -750,10 +750,14 @@ func sectionIndexes(content []byte, sectionName string) (found bool, startIdx in
 func getSection(content []byte, sectionName string) (section []byte) {
 	found, _, startInnerIdx, endInnerIdx, _ := sectionIndexes(content, sectionName)
 	if found {
-		goMod := "\n" + string(content[startInnerIdx:endInnerIdx])
-		goMod = strings.ReplaceAll(goMod, "\n// ", "\n")
-		goMod = strings.ReplaceAll(goMod, "\n//", "\n")
-		return []byte(goMod)
+		sectionString := "\n" + string(content[startInnerIdx:endInnerIdx])
+		// Handle scripts both with and without the : prefix
+		sectionString = strings.ReplaceAll(sectionString, "\n// :", "\n")
+		// If we haven't removed anything try the old format
+		if len(sectionString) == endInnerIdx-startInnerIdx+1 {
+			sectionString = strings.ReplaceAll(sectionString, "\n// ", "\n")
+		}
+		return []byte(sectionString)
 	}
 	return []byte("")
 }

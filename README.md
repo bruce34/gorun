@@ -131,24 +131,28 @@ To protect against changing/different dependencies compiled with the script, it 
 go.mod, go.sum contents and environment variables in the file as a comment. Fictitious example:
     
     // go.mod >>>
-    // module github.com/a/b
-    // go 1.18
-    // require github.com/c/d v0.0.0-20200225084820-12345affa
-    // require mycompany.com/e/f v0.0.0-20200225084120-1849135
+    // :module github.com/a/b
+    // :go 1.18
+    // :require github.com/c/d v0.0.0-20200225084820-12345affa
+    // :require mycompany.com/e/f v0.0.0-20200225084120-1849135
     // <<< go.mod
     //
     // go.env >>>
-    // GOPRIVATE=mycompany.com
+    // :GOPRIVATE=mycompany.com
     // <<< go.env
     //
     // go.sum >>>
-    // github.com/c v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
+    // :github.com/c v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
     // <<< go.sum
     
     package main
     
     import (
     ...
+
+Note that each line of the go.mod, go.sum etc. file is prefixed with a ':'. This is to defend against gofmt from
+reformatting the comment. Previous version of gorun didn't add this prefix, and the current version supports go scripts
+both with or without the prefix.
 
 Note that the go.env environment variables are passed to go build at compile time. That allows in the example
 above for GOPRIVATE or other such dependency management options to be set before compilation.
