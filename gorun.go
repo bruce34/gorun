@@ -1,13 +1,13 @@
 //
 // go.mod >>>
-// module gorun
-// go 1.18
-// require golang.org/x/mod v0.10.0
+// :module gorun
+// :go 1.18
+// :require golang.org/x/mod v0.18.0
 // <<< go.mod
 
 // go.sum >>>
-// golang.org/x/mod v0.10.0 h1:lFO9qtOdlre5W1jxS3r/4szv2/6iXxScdzjoBMXNhYk=
-// golang.org/x/mod v0.10.0/go.mod h1:iBbtSCu2XBx23ZKBPSOrRkjjQPZFPuis4dIYUhu/chs=
+// :golang.org/x/mod v0.18.0 h1:5+9lSbEzPSdWkH32vYPBwEpX8KwDbM52Ud9xBUvNlb0=
+// :golang.org/x/mod v0.18.0/go.mod h1:hTbmBsO62+eylJbnUtE2MGJUyE7QWk4xUqPFrRgJ+7c=
 // <<< go.sum
 
 package main
@@ -58,13 +58,14 @@ const (
 )
 
 type Script struct {
-	debug             bool     // more output, don't delete temporary files
-	content           []byte   // contents of the primary script.go file
-	scriptPath        string   // full path to the primary script.go file
-	scriptExtraDir    string   // full path to any extra script dir
-	scriptRelWorkDirs []string // path to any local referenced (../* only) go.work directories
-	scriptWorkDirs    []string // path to any local referenced (../* only) go.work directories, full path
-	args              []string
+	debug               bool     // more output, don't delete temporary files
+	recompileWrongGoVer bool     // recompile the binary if the go version doesn't match the installed version
+	content             []byte   // contents of the primary script.go file
+	scriptPath          string   // full path to the primary script.go file
+	scriptExtraDir      string   // full path to any extra script dir
+	scriptRelWorkDirs   []string // path to any local referenced (../* only) go.work directories
+	scriptWorkDirs      []string // path to any local referenced (../* only) go.work directories, full path
+	args                []string
 	// where to write subdirectories to
 	tmpDirBase string
 	// subdirectory containing all this user's commands (a sub of tmpDirBase)
@@ -113,6 +114,7 @@ func main() {
 	flag.BoolVar(&extract, "extract", false, "extract the comments to filesystem go.mod/go.sum/go.work/go.work.sum")
 	flag.BoolVar(&extractIfMissing, "extractIfMissing", false, "extract the comments to filesystem go.mod/go.sum/go.work/go.work.sum only if BOTH files do not exist on disc")
 	flag.BoolVar(&s.debug, "debug", false, "provide more debug, don't delete temporary files under /tmp")
+	flag.BoolVar(&s.recompileWrongGoVer, "recompileWrongGoVer", false, "recompile the script if the compiled target wasn't compiled with the currently installed go version")
 	flag.StringVar(&s.tmpDirBase, "targetDirBase", "/tmp", "directory to copy script and extract go.mod etc. to before building")
 	flag.BoolVar(&version, "version", false, "Print version info and exit")
 	flag.CommandLine.Parse(args)
@@ -193,6 +195,9 @@ func (s *Script) initVars() (err error) {
 
 	// for each WorkFile.Path, we want to ignore ./* and copy any ../.* across
 	wf, err := modfile.ParseWork(GOWORK, gowork, nil)
+	if err != nil {
+		return
+	}
 	for _, w := range wf.Use {
 		if strings.HasPrefix(w.Path, "../") {
 			s.scriptRelWorkDirs = append(s.scriptRelWorkDirs, w.Path)
@@ -253,7 +258,11 @@ func (s *Script) writeFileFromCommentsOrDir(content []byte, sectionName string) 
 // updateTarget copies all needed files to build the script binary to the target area
 func (s *Script) updateTarget() (err error) {
 	os.RemoveAll(s.perRunTmpDirBase) // just in case it still exists
-	os.MkdirAll(s.perRunTmpDirBase, 0700)
+	err = os.MkdirAll(s.perRunTmpDirBase, 0700)
+	if err != nil {
+		fmt.Printf("Failed to mkdirAll for %v. %v\n", s.perRunTmpDirBase, err.Error())
+		return
+	}
 
 	checkDirs := []string{}
 	if s.scriptExtraDir != "" {
@@ -263,10 +272,16 @@ func (s *Script) updateTarget() (err error) {
 	for _, dir := range checkDirs {
 		src := dir
 		dest := filepath.Join(s.perRunTmpDirBase, dir)
-		os.MkdirAll(dest, 0700)
+		err = os.MkdirAll(dest, 0700)
+		if err != nil {
+			fmt.Printf("Failed to mkdirAll on %v. %v\n", dest, err.Error())
+			return
+		}
+
 		err = copyDir(dest, src)
 		if err != nil {
-			fmt.Printf("%v\n", err.Error())
+			fmt.Printf("Failed to copyDir %v\n", err.Error())
+			return
 		}
 	}
 
@@ -280,7 +295,11 @@ func (s *Script) updateTarget() (err error) {
 		s.content[0] = '/'
 		s.content[1] = '/'
 	}
-	os.MkdirAll(filepath.Dir(dstScriptPath), 0700)
+	err = os.MkdirAll(filepath.Dir(dstScriptPath), 0700)
+	if err != nil {
+		fmt.Printf("Failed to mkdirAll for %v. %v\n", filepath.Dir(dstScriptPath), err.Error())
+		return
+	}
 	err = os.WriteFile(dstScriptPath, s.content, 0600)
 	if err != nil {
 		return
@@ -323,6 +342,7 @@ func runCommand(dir string, env []string, command string, args ...string) (err e
 	return
 }
 
+// getEnvVar returns the value of an environment variable from a slice of environment variables
 func getEnvVar(env []string, key string) string {
 
 	// Go through the list backwards so that we pick up the last version of any
@@ -334,6 +354,56 @@ func getEnvVar(env []string, key string) string {
 		}
 	}
 	return ""
+}
+
+// goVer extracts a goversion from the output of a "go version %v" command
+func goVer(args []string, verPos int) (version string, err error) {
+	gobin, err := goBinaryPath()
+	if err != nil {
+		return
+	}
+	var stdoutBuf bytes.Buffer
+	cmd := exec.Command(gobin, args...)
+	cmd.Stdout = &stdoutBuf
+	cmd.Env = os.Environ()
+	err = cmd.Run()
+	if err == nil {
+		versionArr := strings.Split(strings.TrimSuffix(stdoutBuf.String(), "\n"), " ")
+		if len(versionArr) >= 2 {
+			version = versionArr[len(versionArr)+verPos]
+		} else {
+			err = errors.New(fmt.Sprintf("unable to find version in %+v", versionArr))
+		}
+	}
+	return
+}
+
+// compiledVersion returns the version of go used to compile a file
+func compiledVersion(filepath string) (fileVersion string, err error) {
+	// last entry is the version for a file:
+	// /tmp/gorun-myhost-0/_usr_local_bin_myFile.go/myFile.go.bin: go1.23.2
+	fileVersion, err = goVer([]string{"version", filepath}, -1)
+	return
+}
+
+// installedGoVersion returns the version of go installed on the system
+func installedGoVersion() (gobinVersion string, err error) {
+	// second last entry is the version for a file:
+	// go version go1.23.2 linux/amd64
+	gobinVersion, err = goVer([]string{"version"}, -2)
+	return
+}
+
+// goBinaryPath returns the path to the go binary
+func goBinaryPath() (gobin string, err error) {
+	// find the go binary to call via env var, std location, or the PATH
+	gobin = filepath.Join(runtime.GOROOT(), "bin", "go")
+	if _, err := os.Stat(gobin); err != nil {
+		if gobin, err = exec.LookPath("go"); err != nil {
+			return gobin, errors.New("can't find go tool")
+		}
+	}
+	return gobin, nil
 }
 
 // compile copies the script and its dependencies to a "per run" tmp directory and compiles it there.
@@ -369,12 +439,9 @@ func (s *Script) compile() (err error) {
 		}
 	}
 
-	// find the go binary to call via env var, std location, or the PATH
-	gobin := filepath.Join(runtime.GOROOT(), "bin", "go")
-	if _, err := os.Stat(gobin); err != nil {
-		if gobin, err = exec.LookPath("go"); err != nil {
-			return errors.New("can't find go tool")
-		}
+	gobin, err := goBinaryPath()
+	if err != nil {
+		return err
 	}
 
 	out := filepath.Join(s.perRunTmpDir, filepath.Base(s.scriptPath)+".bin")
@@ -441,8 +508,14 @@ func (s *Script) clean() (err error) {
 	return nil
 }
 
-// targetOutOfDate decides whether the target needs recompiled, i.e. is the source newer than the binary.
+// targetOutOfDate returns if the target needs recompiled, is the source newer than the binary or go version is "too old"?
 func (s *Script) targetOutOfDate() (outOfDate bool, err error) {
+	// target doesn't exist?
+	binaryInfo, binStatErr := os.Stat(s.binary)
+	if binStatErr != nil {
+		return true, nil
+	}
+
 	oldestSrcInfo, err := os.Stat(s.scriptPath)
 	if err != nil {
 		return
@@ -468,22 +541,38 @@ func (s *Script) targetOutOfDate() (outOfDate bool, err error) {
 			return true, err
 		}
 	}
-	binaryInfo, err := os.Stat(s.binary)
-	outOfDate = err != nil || binaryInfo.IsDir() || binaryInfo.ModTime().Before(oldestSrcInfo.ModTime())
+
+	outOfDate = binaryInfo.IsDir() || binaryInfo.ModTime().Before(oldestSrcInfo.ModTime())
+
+	// check the binary was compiled with the same version of go installed on the system.
+	// we have seen binaries filled with zeros on unclean shutdowns, this first stage should also catch that, so
+	// run it outside the s.recompileWrongGoVer check.
+	fileVersion, err := compiledVersion(s.binary)
+	if err != nil {
+		// recompile in case it is a corrupt binary but not pollute its stdout/stderr
+		outOfDate = true
+	} else if !outOfDate && s.recompileWrongGoVer {
+		// If not, further check if the binary was compiled with the version of go installed on the system
+		gobinVersion, err := installedGoVersion()
+		if err != nil {
+			// we couldn't run "go version" for some reason, let's fail now
+			return true, err
+		}
+		outOfDate = (gobinVersion != fileVersion)
+	}
 	return outOfDate, nil
 }
 
 // runScript compiles if required, and then runs the binary created from the script
 func (s *Script) runScript() (err error) {
 	err = s.initVars()
+	if err != nil {
+		return
+	}
 
 	if s.cleanSecs >= 0 {
 		s.clean()
 	}
-	if err != nil {
-		return
-	}
-	// TODO if go.mod exists and --autoEmbed set
 	// we could be getting called multiple times simultaneously, with source code changing under
 	// our feet too. We could also get our directory deleted entirely from under us as part of
 	// a clean up, so let's try multiple times

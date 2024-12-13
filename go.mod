@@ -1,5 +1,5 @@
-module github.com/bruce34/gorun
+module gorun
 
-go 1.19
+go 1.18
 
-require golang.org/x/mod v0.14.0
+require golang.org/x/mod v0.18.0
