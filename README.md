@@ -92,7 +92,12 @@ By default they are kept under /tmp/gorun-<HOST>-<UID>, a directory named after 
 You can remove these files, but there's no reason to do this. These compiled files will be garbage collected by gorun itself after a while once they stop being used.
 
 ## How to build and install gorun from source
-Use ```go get``` as usual, or clone and ```go build .```
+Use ```go get``` as usual, or clone and ```go build -trimpath```
+
+The vcs build info is not included if the source file is specified in ```go build``` - https://github.com/golang/go/issues/51279
+The -trimpath option is used to prevent the build GOROOT env from being embedded in the binary and potential being used to
+find the go toolchain.
+
 
 ## Example usage
 We store go "scripts" in a configuration management repo that is deployed to VMs as required directly in to
