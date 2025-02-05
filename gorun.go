@@ -58,7 +58,7 @@ const (
 )
 
 type Script struct {
-	debug               bool     // more output, don't delete temporary files
+	debug               bool     // more output, don't delete temporary files (GORUN_ARGS=-debug if running script)
 	recompileWrongGoVer bool     // recompile the binary if the go version doesn't match the installed version
 	content             []byte   // contents of the primary script.go file
 	scriptPath          string   // full path to the primary script.go file
@@ -118,6 +118,12 @@ func main() {
 	flag.StringVar(&s.tmpDirBase, "targetDirBase", "/tmp", "directory to copy script and extract go.mod etc. to before building")
 	flag.BoolVar(&version, "version", false, "Print version info and exit")
 	flag.CommandLine.Parse(args)
+
+	if s.debug {
+		wd, _ := os.Getwd()
+		_, _ = fmt.Fprintln(os.Stderr, "cwd: "+wd)
+		_, _ = fmt.Fprintln(os.Stderr, "envs: "+strings.Join(os.Environ(), ","))
+	}
 
 	if version {
 		fmt.Printf("BuildInfo: %v\n", BuildInfoString())
@@ -397,13 +403,21 @@ func installedGoVersion() (gobinVersion string, err error) {
 // goBinaryPath returns the path to the go binary
 func goBinaryPath() (gobin string, err error) {
 	// find the go binary to call via env var, std location, or the PATH
-	gobin = filepath.Join(runtime.GOROOT(), "bin", "go")
-	if _, err := os.Stat(gobin); err != nil {
-		if gobin, err = exec.LookPath("go"); err != nil {
-			return gobin, errors.New("can't find go tool")
+	goRoot := runtime.GOROOT()
+	// Only use GOROOT if we have one, otherwise we end up with a relative path and os.Stat() will
+	// look in the working directory, which isn't the working dictionary later when we run the go bin.
+	if goRoot != "" {
+		gobin = filepath.Join(runtime.GOROOT(), "bin", "go")
+		if _, err := os.Stat(gobin); err == nil {
+			return gobin, nil
 		}
 	}
-	return gobin, nil
+
+	// Look in the PATH
+	if gobin, err = exec.LookPath("go"); err == nil {
+		return gobin, nil
+	}
+	return gobin, errors.New(fmt.Sprintf("can't find go tool in GOROOT (%s) or PATH (%s)", goRoot, os.Getenv("PATH")))
 }
 
 // compile copies the script and its dependencies to a "per run" tmp directory and compiles it there.
