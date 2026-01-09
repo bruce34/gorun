@@ -1,13 +1,14 @@
 //
 // go.mod >>>
 // :module gorun
-// :go 1.18
-// :require golang.org/x/mod v0.18.0
+// :go 1.24.0
+// :toolchain go1.24.2
+// :require golang.org/x/mod v0.31.0
 // <<< go.mod
 
 // go.sum >>>
-// :golang.org/x/mod v0.18.0 h1:5+9lSbEzPSdWkH32vYPBwEpX8KwDbM52Ud9xBUvNlb0=
-// :golang.org/x/mod v0.18.0/go.mod h1:hTbmBsO62+eylJbnUtE2MGJUyE7QWk4xUqPFrRgJ+7c=
+// :golang.org/x/mod v0.31.0 h1:HaW9xtz0+kOcWKwli0ZXy79Ix+UW/vOfmWI5QVd2tgI=
+// :golang.org/x/mod v0.31.0/go.mod h1:43JraMp9cGx1Rx3AqioxrbrhNsLl2l/iNAvuBkrezpg=
 // <<< go.sum
 
 package main
@@ -17,7 +18,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"golang.org/x/mod/modfile"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +27,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/mod/modfile"
 )
 
 // BuildInfoString returns the build information stored within the compiled binary, git sha etc.
@@ -66,23 +68,15 @@ type Script struct {
 	scriptRelWorkDirs   []string // path to any local referenced (../* only) go.work directories
 	scriptWorkDirs      []string // path to any local referenced (../* only) go.work directories, full path
 	args                []string
-	// where to write subdirectories to
-	tmpDirBase string
-	// subdirectory containing all this user's commands (a sub of tmpDirBase)
-	perUserTmpDir string
-	// subdirectory containing this user's version of the command (a sub of perUserTmpDir)
-	tmpDir string
-	// per PID version of this user's version of the command (deleted after build)
-	perRunTmpDirBase string
-	// copy everything down to a completely unique tmp directory and delete it afterwards
-	perRunTmpDir string
-	// moving the binary to <tmpDir>/script.go.bin just before
-	// compiled binary final resting place, lives under tmpDir
-	binary string
-	// file showing the binary was run lately (for filesystems not running atime)
-	binaryLastRun string
-	// any binaries not accessed within this number of seconds get deleted (and rebuilt)
-	cleanSecs int64
+	tmpDirBase          string // where to write subdirectories to
+	perUserTmpDir       string // subdirectory containing all this user's commands (a sub of tmpDirBase)
+	tmpDir              string // subdirectory containing this user's version of the command (a sub of perUserTmpDir)
+	perRunTmpDirBase    string // per PID version of this user's version of the command (deleted after build)
+	perRunTmpDir        string // copy everything down to a completely unique tmp directory and delete it afterwards
+	binary              string // moving the binary to <tmpDir>/script.go.bin just before compiled binary final resting place, lives under tmpDir
+	binaryLastRun       string // file showing the binary was run lately (for filesystems not running atime)
+	cleanSecs           int64  // any binaries not accessed within this number of seconds get deleted (and rebuilt)
+	cleanSecsBuildDirs  int64  // any build directories for this binary older than this get deleted
 }
 
 // realPath returns the real absolute path, resolving symlinks
@@ -108,7 +102,7 @@ func main() {
 
 	s := Script{}
 
-	flag.Int64Var(&cleanDays, "cleanDays", 7, "clean all binaries from this user older than N days")
+	flag.Int64Var(&cleanDays, "cleanDays", 14, "clean all binaries from this user older than N days. Set to -1 to disable cleaning")
 	flag.BoolVar(&diff, "diff", false, "show diff between embedded comments and filesystem go.mod/go.sum/go.work/go.work.sum")
 	flag.BoolVar(&embed, "embed", false, "embed filesystem go.mod/go.sum/go.work/go.work.sum as comments in source file")
 	flag.BoolVar(&extract, "extract", false, "extract the comments to filesystem go.mod/go.sum/go.work/go.work.sum")
@@ -137,6 +131,7 @@ func main() {
 
 	s.args = flag.Args()
 	s.cleanSecs = cleanDays * 24 * 3600
+	s.cleanSecsBuildDirs = 1 * 3600 // 1 hour for cleaning up stale build directories
 
 	sourceFile, err := realPath(flag.Arg(0))
 	if err != nil {
@@ -452,6 +447,8 @@ func (s *Script) compile() (err error) {
 			}
 		}
 	}
+	// custom directory for temporary files used during Go builds. Put it alongside the final binary so it can be auto-cleaned
+	env = append(env, "GOTMPDIR="+s.tmpDir)
 
 	gobin, err := goBinaryPath()
 	if err != nil {
@@ -490,7 +487,7 @@ func touchFile(file string) (err error) {
 	return
 }
 
-// run runs the binary and marks when it was last run (by touching a file) if set to clean up other scripts by the same user
+// run runs the binary and marks when it was last run (by touching a file alongside the binary)
 func (s *Script) run() (err error) {
 	if s.cleanSecs >= 0 {
 		_ = touchFile(s.binaryLastRun)
@@ -501,6 +498,7 @@ func (s *Script) run() (err error) {
 
 // remove binaries that haven't been accessed for a while.
 // Check a file in each directory to see when it was last touched (last run)
+// Also remove any per-process build and cache directories that are older than cleanSecsBuildDirs
 func (s *Script) clean() (err error) {
 	perUserDir, err := os.Open(s.perUserTmpDir)
 	if err != nil {
@@ -511,11 +509,39 @@ func (s *Script) clean() (err error) {
 		return
 	}
 	cutoffTime := time.Now().Add(time.Duration(-s.cleanSecs) * time.Second)
+	buildDirCutoffTime := time.Now().Add(time.Duration(-s.cleanSecsBuildDirs) * time.Second)
+
 	for _, info := range infos {
 		if info.IsDir() {
-			st, err := os.Stat(filepath.Join(s.perUserTmpDir, info.Name(), ".lastRun"))
+			scriptDir := filepath.Join(s.perUserTmpDir, info.Name())
+
+			// Check and clean the binary if it hasn't been accessed recently
+			st, err := os.Stat(filepath.Join(scriptDir, ".lastRun"))
 			if !os.IsNotExist(err) && st.ModTime().Before(cutoffTime) {
-				os.RemoveAll(filepath.Join(s.perUserTmpDir, info.Name()))
+				os.RemoveAll(scriptDir)
+				continue // Directory removed, skip build dir cleanup
+			}
+
+			// Clean up old build directories (per-process directories left behind by crashes)
+			buildDirs, err := os.ReadDir(scriptDir)
+			if err != nil {
+				continue // Skip if we can't read the directory
+			}
+			for _, buildDir := range buildDirs {
+				if buildDir.IsDir() {
+					isPIDDir := false
+					// Check if the directory name is numeric (PID)
+					if _, err := strconv.Atoi(buildDir.Name()); err == nil {
+						isPIDDir = true
+					}
+					if strings.HasPrefix(buildDir.Name(), "go-build") || isPIDDir {
+						buildDirPath := filepath.Join(scriptDir, buildDir.Name())
+						buildDirInfo, err := buildDir.Info()
+						if err == nil && buildDirInfo.ModTime().Before(buildDirCutoffTime) {
+							os.RemoveAll(buildDirPath)
+						}
+					}
+				}
 			}
 		}
 	}

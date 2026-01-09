@@ -1,5 +1,7 @@
 module gorun
 
-go 1.18
+go 1.24.0
 
-require golang.org/x/mod v0.18.0
+toolchain go1.24.2
+
+require golang.org/x/mod v0.31.0
