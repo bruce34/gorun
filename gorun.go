@@ -150,6 +150,9 @@ func main() {
 		err = s.embedEmbedded()
 	} else {
 		err = s.runScript()
+		if err != nil {
+			err = errors.New("running script failed to find compiled binary: " + err.Error())
+		}
 	}
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "error: "+err.Error())
@@ -425,6 +428,12 @@ func (s *Script) compile() (err error) {
 	if err != nil {
 		return
 	}
+	s.waitForActiveBuilds()
+	// maybe it was built while we were waiting?
+	outOfDate, err := s.targetOutOfDate()
+	if err == nil && !outOfDate {
+		return
+	}
 
 	// use the default environment before adding our overrides, this allows GOPRIVATE etc. to be used in the build
 	var env []string
@@ -472,6 +481,83 @@ func (s *Script) compile() (err error) {
 		return err
 	})
 	return
+}
+
+// isProcessRunning checks if a process with the given PID is still running
+func isProcessRunning(pid int) bool {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// On Unix, FindProcess always succeeds, so we need to send signal 0 to check if process exists
+	err = process.Signal(syscall.Signal(0))
+	return err == nil
+}
+
+// hasActiveBuild checks if there are any active compilation processes for this script
+// by looking for PID directories in s.tmpDir and checking if those processes are still running
+// even if they are, we will continue if we are the lowest PID
+func (s *Script) hasActiveBuild() bool {
+	entries, err := os.ReadDir(s.tmpDir)
+	if err != nil {
+		return false // If we can't read the directory, assume no active builds
+	}
+
+	currentPID := os.Getpid()
+	for _, entry := range entries {
+		if entry.IsDir() {
+			// Check if the directory name is numeric (PID)
+			if pid, err := strconv.Atoi(entry.Name()); err == nil {
+				// Skip our own PID
+				if pid != currentPID && isProcessRunning(pid) {
+					if pid < currentPID {
+						if s.debug {
+							_, _ = fmt.Fprintf(os.Stdout, "[%v] Detected lower active build process with PID %d\n", currentPID, pid)
+						}
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// waitForActiveBuilds waits for any lower PID active builds to complete before proceeding
+// Returns true if it's safe to proceed, false if timeout occurred.
+func (s *Script) waitForActiveBuilds() bool {
+	maxRetries := 12 //  Waits max approx 17s at 12 iterations. But may be called twice, so 34s total.
+	waitTime := 100 * time.Millisecond
+	maxWaitTime := 2 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		if !s.hasActiveBuild() {
+			return true
+		}
+
+		if s.debug {
+			_, _ = fmt.Fprintf(os.Stderr, "Active build detected, waiting %v (attempt %d/%d)\n", waitTime, i+1, maxRetries)
+		}
+
+		time.Sleep(waitTime)
+		outOfDate, err := s.targetOutOfDate()
+		if err == nil && !outOfDate {
+			_, _ = fmt.Fprintf(os.Stderr, "Active build detected, escaping %v (attempt %d/%d)\n", waitTime, i+1, maxRetries)
+			return false
+		}
+
+		// Exponential backoff, but cap at maxWaitTime
+		waitTime *= 2
+		if waitTime > maxWaitTime {
+			waitTime = maxWaitTime
+		}
+	}
+
+	// Timeout occurred, but we'll proceed anyway
+	if s.debug {
+		_, _ = fmt.Fprintf(os.Stderr, "Timeout waiting for active builds, proceeding anyway\n")
+	}
+	return false
 }
 
 func touchFile(file string) (err error) {
@@ -619,14 +705,23 @@ func (s *Script) runScript() (err error) {
 	var outOfDate bool
 	for i := 0; i < 5; i++ {
 		outOfDate, err = s.targetOutOfDate()
-
 		if err != nil {
 			return // can't find the source file - let's bail
 		}
+
 		if outOfDate {
-			err = s.compile() // can't compile, well, it could be inconsistent source, let's bail
+			// Wait for any active builds to complete before starting our own
+			s.waitForActiveBuilds()
+			// maybe it was built while we were waiting?
+			outOfDate, err = s.targetOutOfDate()
 			if err != nil {
-				return
+				return // can't find the source file - let's bail
+			}
+			if outOfDate {
+				err = s.compile() // can't compile, well, it could be inconsistent source, let's bail
+				if err != nil {
+					return
+				}
 			}
 		}
 		err = s.run()
