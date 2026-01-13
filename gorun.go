@@ -40,14 +40,13 @@ func BuildInfoString() string {
 }
 
 func Usage() {
-	fmt.Fprintf(flag.CommandLine.Output(),
-		flag.CommandLine.Name()+`: Compile and run a go "script" in a single command.
+	fmt.Fprintf(flag.CommandLine.Output(), `%s: Compile and run a go "script" in a single command.
 
 Options can be provided via GORUN_ARGS environment variable, or on the command line.
 If there exists a directory of the same base name as the .go file, plus a trailing '_', that
 too will be copied and included in the build of the go program.
 
-`)
+`, flag.CommandLine.Name())
 	fmt.Fprintf(flag.CommandLine.Output(), "%s [options] <sourceFile.go>:\n", flag.CommandLine.Name())
 	flag.PrintDefaults()
 }
@@ -62,6 +61,7 @@ const (
 type Script struct {
 	debug               bool     // more output, don't delete temporary files (GORUN_ARGS=-debug if running script)
 	recompileWrongGoVer bool     // recompile the binary if the go version doesn't match the installed version
+	noRun               bool     // recompile of the binary if required, but don't run. Handy for testing before deployment
 	content             []byte   // contents of the primary script.go file
 	scriptPath          string   // full path to the primary script.go file
 	scriptExtraDir      string   // full path to any extra script dir
@@ -111,6 +111,7 @@ func main() {
 	flag.BoolVar(&s.recompileWrongGoVer, "recompileWrongGoVer", false, "recompile the script if the compiled target wasn't compiled with the currently installed go version")
 	flag.StringVar(&s.tmpDirBase, "targetDirBase", "/tmp", "directory to copy script and extract go.mod etc. to before building")
 	flag.BoolVar(&version, "version", false, "Print version info and exit")
+	flag.BoolVar(&s.noRun, "noRun", false, "recompile of the binary if required, but don't run. Handy for testing before deployment")
 	flag.CommandLine.Parse(args)
 
 	if s.debug {
@@ -724,7 +725,9 @@ func (s *Script) runScript() (err error) {
 				}
 			}
 		}
-		err = s.run()
+		if !s.noRun {
+			err = s.run()
+		}
 		if !os.IsNotExist(err) {
 			break // we ran, must be a real error
 		}
@@ -805,7 +808,7 @@ func (s *Script) diffEmbedded() (err error) {
 	}
 
 	if diff1 != "" || diff2 != "" || diff3 != "" || diff4 != "" {
-		_, _ = fmt.Fprintln(os.Stderr, "Diffs found\n")
+		_, _ = fmt.Fprintln(os.Stderr, "Diffs found")
 		os.Exit(1)
 	}
 	return
