@@ -109,7 +109,7 @@ func main() {
 	flag.BoolVar(&extractIfMissing, "extractIfMissing", false, "extract the comments to filesystem go.mod/go.sum/go.work/go.work.sum only if BOTH files do not exist on disc")
 	flag.BoolVar(&s.debug, "debug", false, "provide more debug, don't delete temporary files under /tmp")
 	flag.BoolVar(&s.recompileWrongGoVer, "recompileWrongGoVer", false, "recompile the script if the compiled target wasn't compiled with the currently installed go version")
-	flag.StringVar(&s.tmpDirBase, "targetDirBase", "/tmp", "directory to copy script and extract go.mod etc. to before building")
+	flag.StringVar(&s.tmpDirBase, "targetDirBase", "/var/tmp", "directory to copy script and extract go.mod etc. to before building")
 	flag.BoolVar(&version, "version", false, "Print version info and exit")
 	flag.BoolVar(&s.noRun, "noRun", false, "recompile of the binary if required, but don't run. Handy for testing before deployment")
 	flag.CommandLine.Parse(args)
