@@ -561,12 +561,14 @@ func (s *Script) waitForActiveBuilds() bool {
 	return false
 }
 
-func touchFile(file string) (err error) {
+func touchFile(file string, onlyIfExists bool) (err error) {
 	_, err = os.Stat(file)
 	if os.IsNotExist(err) {
-		var f *os.File
-		f, err = os.Create(file)
-		defer f.Close()
+		if !onlyIfExists {
+			var f *os.File
+			f, err = os.Create(file)
+			defer f.Close()
+		}
 	} else {
 		currentTime := time.Now().Local()
 		err = os.Chtimes(file, currentTime, currentTime)
@@ -577,7 +579,8 @@ func touchFile(file string) (err error) {
 // run runs the binary and marks when it was last run (by touching a file alongside the binary)
 func (s *Script) run() (err error) {
 	if s.cleanSecs >= 0 {
-		_ = touchFile(s.binaryLastRun)
+		_ = touchFile(s.binaryLastRun, false)
+		_ = touchFile(s.binary, true)
 	}
 	err = syscall.Exec(s.binary, s.args, os.Environ())
 	return
