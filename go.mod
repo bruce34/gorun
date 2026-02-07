@@ -1,4 +1,4 @@
-module gorun
+module github.com/bruce34/gorun
 
 go 1.24.0
 
